@@ -1,0 +1,11 @@
+TODO:
+- backend + provider
+- EC2
+- S3
+- VPC
+  -Subnet
+- Security Groups + rules
+- Load Balancers
+  -ALB target group + attachement
+- Route 53 zone + record
+- RDS

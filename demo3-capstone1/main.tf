@@ -1,0 +1,194 @@
+terraform {
+  required_providers {
+    aws = {
+        source = "hashicorp/aws"
+        version = "~>5.0"
+    }
+  }
+}
+provider "aws" {
+  region = "us-east-1"
+}
+
+#EC2 instances
+
+resource "aws_instance" "ec2-1" {
+  ami = "ami-011899242bb902164" #ubuntu 20.04 lts
+  instance_type = "t2.micro"
+  security_groups = [ aws_security_group.instances.name ]
+  user_data = <<-EOF
+                #!bin/sh
+                echo "Hello World" > index.html
+                python3 -m http.server 8080 &
+                EOF 
+}
+
+resource "aws_instance" "ec2-2" {
+  ami = "ami-011899242bb902164" #ubuntu 20.04 lts
+  instance_type = "t2.micro"
+  security_groups = [ aws_security_group.instances.name ]
+  user_data = <<-EOF
+                #!bin/sh
+                echo "Hello World 2" > index.html
+                python3 -m http.server 8080 &
+                EOF 
+}
+
+resource "aws_s3_bucket" "my_buck" {
+  bucket = "rhustish-s3-temp"
+  force_destroy = true
+}
+
+# "data" will reference an existing resourece withing aws
+
+data "aws_vpc" "default_vpc" {
+  default = true
+}
+
+data "aws_subnet" "default_subnet" {
+  vpc_id = data.aws_vpc.default_vpc.id
+}
+
+resource "aws_security_group" "instances" {
+  name = "my-sg-instances"
+}
+
+resource "aws_security_group_rule" "allow_http_in" {
+  type = "ingress"
+  security_group_id = aws_security_group.instances.id
+  to_port = 8080
+  from_port = 8080
+  protocol = "tcp"
+  cidr_blocks = ["0.0.0.0/0"]
+}
+
+resource "aws_lb_listener" "my_lbl" {
+  load_balancer_arn = aws_lb.load_balancer_arn
+
+  port = 80
+
+  protocol = "HTTP"
+
+  default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "404: not found"
+      status_code = 404
+    }
+
+  }
+}
+
+resource "aws_lb_target_group" "instances" {
+  name = "my-tg"
+  port = 8080  
+  protocol = "HTTP"
+  vpc_id = data.aws_vpc.default_vpc.id
+
+  health_check {
+    path = "/"
+    protocol = "HTTP"
+    matcher = "200"
+    interval = 15
+    timeout = 3
+    healthy_threshold = 2
+    unhealthy_threshold = 2
+  }
+}
+
+resource "aws_lb_target_group_attachment" "i1" {
+  target_group_arn = aws_lb_target_group.instances.arn
+  target_id = aws_instance.ec2-1.id
+  port = 8080
+}
+
+resource "aws_lb_target_group_attachment" "i2" {
+  target_group_arn = aws_lb_target_group.instances.arn
+  target_id = aws_instance.ec2-2.id
+  port = 8080
+}
+
+resource "aws_lb_listener_rule" "listenrule" {
+    listener_arn = aws_lb_listener.my_lbl.arn
+    priority = 100
+
+    condition {
+      path_pattern {
+        values = [ "*" ]   
+      }
+    }
+
+    action {
+      type = "forward"
+      target_group_arn = aws_lb_target_group.instances.arn
+    }
+}
+
+resource "aws_security_group" "alb" {
+  name = "alb-security-group"
+}
+
+resource "aws_security_group_rule" "allow_alb_http_inbound" {
+  type              = "ingress"
+  security_group_id = aws_security_group.alb.id
+
+  from_port   = 80
+  to_port     = 80
+  protocol    = "tcp"
+  cidr_blocks = ["0.0.0.0/0"]
+
+}
+
+resource "aws_security_group_rule" "allow_alb_all_outbound" {
+  type              = "egress"
+  security_group_id = aws_security_group.alb.id
+
+  from_port   = 0
+  to_port     = 0
+  protocol    = "-1"
+  cidr_blocks = ["0.0.0.0/0"]
+
+}
+
+
+resource "aws_lb" "load_balancer" {
+  name               = "web-app-lb"
+  load_balancer_type = "application"
+  subnets            = data.aws_subnet.default_subnet.id #data.aws_subnet_ids.default_subnet.ids
+  security_groups    = [aws_security_group.alb.id]
+
+}
+
+resource "aws_route53_zone" "primary" {
+  name = "devopsdeployed.com"
+}
+
+resource "aws_route53_record" "root" {
+  zone_id = aws_route53_zone.primary.zone_id
+  name    = "devopsdeployed.com"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.load_balancer.dns_name
+    zone_id                = aws_lb.load_balancer.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_db_instance" "db_instance" {
+  allocated_storage = 20
+  # This allows any minor version within the major engine_version
+  # defined below, but will also result in allowing AWS to auto
+  # upgrade the minor version of your DB. This may be too risky
+  # in a real production environment.
+  auto_minor_version_upgrade = true
+  storage_type               = "standard"
+  engine                     = "postgres"
+  engine_version             = "12"
+  instance_class             = "db.t2.micro"
+  username                   = "foo"
+  password                   = "foobarbaz"
+  skip_final_snapshot        = true
+}
